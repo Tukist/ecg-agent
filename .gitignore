@@ -1,0 +1,20 @@
+# 依赖与缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 数据（体积大，不入库；复现脚本见 README）
+data/mitdb/
+data/cache/
+data/_kaggle/
+data/_ms_cache/
+
+# 密钥（绝不要提交）
+.ds_key
+.env
+
+# 演示产物（保留示例报告，排除网页端临时图）
+reports/_web/
+
+# 打包产物
+dist/

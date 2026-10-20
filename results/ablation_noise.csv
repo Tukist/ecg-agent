@@ -1,0 +1,6 @@
+preset,candidates,surviving,surviving_in_artifact,surviving_in_clean,alerts_total,alerts_in_artifact,alerts_in_clean,suppressed,coverage
+裸阈值,30,30,29,1,0,0,0,0,0.0
++质量门控,30,26,26,0,0,0,0,4,0.706
++二次确认,30,26,26,0,0,0,0,4,0.706
++个体定标,30,26,26,0,0,0,0,4,0.706
+完整五层,30,26,26,0,0,0,0,4,0.706

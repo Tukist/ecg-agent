@@ -13,6 +13,12 @@
 > 口径红线（同调研报告）：所有输出都是**提示级**（"疑似""建议就医复核"），
 > **不做诊断、不做预警**；报告里也不出现"诊断/预警率"这类表述。
 
+## 交付材料
+- 技术总结报告：[docs/ecg_agent_技术总结报告.docx](docs/ecg_agent_技术总结报告.docx)
+- 功能全景 PPT：[docs/ecg_agent_功能全景_20261023_v2.pptx](docs/ecg_agent_功能全景_20261023_v2.pptx)
+- 逐页讲稿：[docs/讲稿_照着念.md](docs/讲稿_照着念.md)
+- Release 直链：[github.com/Tukist/ecg-agent/releases/latest](https://github.com/Tukist/ecg-agent/releases/latest)
+
 ---
 
 ## 快速开始
@@ -44,7 +50,7 @@ PYTHONPATH=src .venv/Scripts/python.exe -m ecg_agent.cli analyze \
 双击项目根目录的 **`start_web.bat`**，或命令行：
 
 ```cmd
-cd /d D:\pythoncode\frb\ecg_agent
+cd /d 你的路径\ecg_agent
 set PYTHONPATH=src
 .venv\Scripts\python.exe -m streamlit run app.py --server.port 8600
 ```
@@ -57,6 +63,28 @@ set PYTHONPATH=src
 > **端口为什么是 8600**：Windows/Hyper-V 把 **8457–8556** 保留成排除端口段，
 > Streamlit 默认的 8501 正好落在里面，绑定会报 `WinError 10013`。
 > 查自己机器的保留段：`netsh int ipv4 show excludedportrange protocol=tcp`。
+
+## 受检者信息（年龄 / 性别 / BMI）
+
+阈值顺序是 **人群先验 → 个人基线微调**，两层不冲突：
+
+- **年龄**决定年龄段阈值（新生儿 / 婴儿 / 幼儿 / 学龄前 / 学龄期 / 青少年 / 成人 / 老年）。
+  心率、过速、过缓阈值都按年龄段取；儿科不让 L5 用 5 分钟基线放宽阈值
+  （儿童基线受哭闹/活动影响大）。**房颤筛查在 18 岁以下不启用**（模型训练集是成人）。
+- **性别 / BMI** 只对**心动过速上限**做小幅修正（女性 +2 bpm；BMI >25 时每高 5 个单位 +1 bpm，
+  上限 +4），证据弱、幅度小，不动过缓/停搏阈值。BMI ≥30 会在报告里提示运动伪差风险。
+- 儿科阈值来自临床年龄段静息心率参考范围，**未在本项目数据上验证**；
+  儿童 BMI 应按年龄性别百分位判读，这里只做粗略处理。不填任何信息 = 成人默认阈值（与旧版一致）。
+
+命令行：
+
+```bash
+PYTHONPATH=src .venv/Scripts/python.exe -m ecg_agent.cli analyze \
+    --source mitdb:100 --minutes 20 --age 9 --sex 男 --bmi 17
+```
+
+网页端在左侧「受检者信息（可选）」里填。报告、决策日志和 AI 解说上下文都会带上
+人群阈值与"未验证"说明。
 
 ## 📦 换一台电脑怎么跑（发给同学看这段）
 

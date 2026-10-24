@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .. import subject as subject_mod
 from ..algorithms import quality as Q
 from ..algorithms import rhythm as R
 from ..algorithms.hrv import rr_intervals
@@ -45,6 +46,7 @@ class Decision:
     log: list = field(default_factory=list)             # 决策日志（逐层）
     coverage: float = 0.0                 # 有效监测时长占比（过质量门控的窗口比例）
     calibrated: dict = field(default_factory=dict)      # L5 个体化后的阈值
+    population: dict = field(default_factory=dict)      # 人群先验（年龄/性别/BMI → 阈值）
 
     @property
     def n_alerts(self) -> int:
@@ -53,12 +55,24 @@ class Decision:
 
 
 # ---------------------------------------------------------------- L5 个体定标
-def calibrate(r_peaks, fs: float, baseline_min: float = 5.0) -> dict:
-    """用本人数据的前若干分钟建立基线，返回个体化阈值。
+def calibrate(r_peaks, fs: float, baseline_min: float = 5.0,
+              prior: dict | None = None) -> dict:
+    """用本人数据的前若干分钟建立基线，在人群先验之上做个体微调。
 
     依据：报告里"形态分组/个体定标"一节——全局固定阈值在个体间区分不开，
     阈值必须用自己的数据标定（这也是文献阈值不能直接抄的原因）。
+
+    prior: `subject.prior_for()` 的返回。不传时沿用成人默认（100/50/3.0/0.10），
+           与加入人群参数之前的行为完全一致。
     """
+    prior = prior or {}
+    base_pause = float(prior.get("pause_s", 3.0))
+    base_tachy = float(prior.get("tachy", 100.0))
+    base_brady = float(prior.get("brady", 50.0))
+    base_af_cv = float(prior.get("af_cv", 0.10))
+    # 儿科：年龄段区间比 5 分钟个人基线稳，L5 不放宽心率阈值
+    rate_fixed = bool(prior.get("rate_fixed", False))
+
     r = np.asarray(r_peaks) / fs
     if len(r) < 10:
         return {}
@@ -71,19 +85,20 @@ def calibrate(r_peaks, fs: float, baseline_min: float = 5.0) -> dict:
     if len(rr) < 5:
         return {}
     med = float(np.median(rr))
-    mad = float(np.median(np.abs(rr - med))) or 0.02
+    mad = float(np.median(np.abs(rr - med))) or 0.02  # noqa: F841  保留供后续形态定标
     cv = float(np.std(rr) / np.mean(rr))
+    hr_base = 60.0 / med
     return {
         "median_rr": med,
-        "hr_baseline": 60.0 / med,
+        "hr_baseline": hr_base,
         "cv_baseline": cv,
-        # 停搏阈值：不低于 3.0 s，且随个人基础 RR 抬高（生理上长间歇是相对的）
-        "pause_s": max(3.0, 3.5 * med),
-        # 心动过速/过缓：以个人基线 ±20 bpm 为界（比全局固定值更贴个体）
-        "tachy": max(100.0, 60.0 / med + 25.0),
-        "brady": min(50.0, 60.0 / med - 20.0),
-        # 房颤样不规则：以个人基线 CV 的 2.5 倍为下限，但不低于 0.10
-        "af_cv": max(0.10, 2.5 * cv),
+        # 停搏阈值：不低于人群先验，且随个人基础 RR 抬高（生理上长间歇是相对的）
+        "pause_s": max(base_pause, 3.5 * med),
+        # 心动过速/过缓：成人按个人基线 ±20 bpm 微调；儿科固定用年龄段阈值
+        "tachy": base_tachy if rate_fixed else max(base_tachy, hr_base + 25.0),
+        "brady": base_brady if rate_fixed else min(base_brady, hr_base - 20.0),
+        # 房颤样不规则：以个人基线 CV 的 2.5 倍为下限，但不低于人群先验
+        "af_cv": max(base_af_cv, 2.5 * cv),
     }
 
 
@@ -109,16 +124,22 @@ def apply_l1(events: list, quality_windows: list[dict], thr: float, log: list):
 
 # ---------------------------------------------------------------- L3 二次确认
 def apply_l3(events: list, x: np.ndarray, fs: float, r_peaks_second, log: list,
-             min_windows: int = 2):
+             min_windows: int = 2, rate_thr: dict | None = None):
     """两个独立路径确认：
 
       · 检测器级：用第二检测器（XQRS）的 R 波序列重跑同类筛查，事件是否复现；
       · 时间级：AF 类事件必须跨 ≥min_windows 个连续窗口（筛查时已保证），
         停搏类要求第二检测器也看到同样的长 RR。
+
+    rate_thr: 本次生效的心率阈值（人群先验 + L5 个体定标后的 tachy/brady）。
+              二次确认必须跟着同一套阈值走，否则儿童的真实心动过缓会被
+              成人阈值（<60）误判成"未复现"而压掉。
     """
     if r_peaks_second is None or len(np.asarray(r_peaks_second)) < 5:
         log.append("[L3 二次确认] 无第二检测器结果，跳过（事件保留但标记未复核）")
         return events, []
+    thr_t = float((rate_thr or {}).get("tachy", R.TACHY_BPM))
+    thr_b = float((rate_thr or {}).get("brady", R.BRADY_BPM))
     rr2 = rr_intervals(r_peaks_second, fs)
     r2 = np.asarray(r_peaks_second) / fs
     kept, downgraded = [], []
@@ -136,9 +157,10 @@ def apply_l3(events: list, x: np.ndarray, fs: float, r_peaks_second, log: list,
             if len(seg) >= 4:
                 rr_seg = np.diff(seg)
                 if e.kind == "tachy":
-                    ok = bool(np.mean(60.0 / rr_seg) > 90)
+                    # 比筛查阈值放宽 10 bpm（成人 100 → 90，婴儿 160 → 150）
+                    ok = bool(np.mean(60.0 / rr_seg) > thr_t - 10.0)
                 elif e.kind == "brady":
-                    ok = bool(np.mean(60.0 / rr_seg) < 60)
+                    ok = bool(np.mean(60.0 / rr_seg) < thr_b + 10.0)
                 elif e.kind == "af_suspect":
                     ok = bool(np.std(rr_seg) / np.mean(rr_seg) > 0.06)
                 else:  # ectopy
@@ -164,12 +186,17 @@ def apply_l3(events: list, x: np.ndarray, fs: float, r_peaks_second, log: list,
 SEVERITY_ORDER = {"info": 0, "caution": 1, "refer": 2}
 
 
-def apply_l2(events: list, log: list):
+def apply_l2(events: list, log: list, rate_thr: dict | None = None):
     """把事件映射成三级分流（对齐 2026 报告规范共识的三层分流框架）：
         refer   ：请会诊/尽快就医级（长停搏、高置信房颤样事件、持续极端心率）
         caution ：需要关注（一般持续心率异常、普通停搏）
         info    ：仅记录（单发早搏等）
+
+    rate_thr: 本次生效的心率阈值。分级阈值跟着人群走——
+              婴儿的 150 bpm 和成人的 150 bpm 不是一回事。
     """
+    thr_t = float((rate_thr or {}).get("tachy", R.TACHY_BPM))
+    thr_b = float((rate_thr or {}).get("brady", R.BRADY_BPM))
     for e in events:
         s = e.severity
         if e.kind == "pause":
@@ -179,9 +206,12 @@ def apply_l2(events: list, log: list):
         elif e.kind in ("tachy", "brady"):
             s = "caution"
             bpm = e.evidence.get("mean_bpm", 0)
-            if e.kind == "tachy" and bpm >= 150:
+            # 过速：成人 150 起报 refer；儿童按年龄段过速阈值（婴儿 160）抬高
+            if e.kind == "tachy" and bpm >= max(150.0, thr_t):
                 s = "refer"
-            if e.kind == "brady" and 0 < bpm <= 40:
+            # 过缓：成人 ≤40 起报 refer；儿童按年龄段阈值下浮 15 bpm，
+            # 且不低于 40（避免把成人的常规口径改掉）
+            if e.kind == "brady" and 0 < bpm <= min(80.0, max(40.0, thr_b - 15.0)):
                 s = "refer"
         elif e.kind == "ectopy":
             s = "info"
@@ -205,29 +235,52 @@ def apply_l4(decision: Decision, log: list):
 
 # ---------------------------------------------------------------- 总装
 def run(x: np.ndarray, fs: float, r_peaks, r_peaks_second=None,
-        cfg: LayerConfig | None = None, quality_windows: list[dict] | None = None) -> Decision:
-    """按五层顺序执行，返回 Decision（含决策日志，可打印给演示用）。"""
+        cfg: LayerConfig | None = None, quality_windows: list[dict] | None = None,
+        profile=None, screen_overrides: dict | None = None) -> Decision:
+    """按五层顺序执行，返回 Decision（含决策日志，可打印给演示用）。
+
+    profile: `subject.SubjectProfile`。提供年龄/性别/BMI 时按人群先验设阈值；
+             None 时按成人默认，与加入人群参数之前的行为一致。
+    screen_overrides: 只给特定场景用的筛查参数覆盖（如实时监测窗较短时
+             放宽 af_min_windows）。默认 None，不影响离线分析。
+    """
     cfg = cfg or LayerConfig()
     log: list[str] = []
     decision = Decision()
 
+    # —— 人群先验：给所有预设（含"裸阈值"）打底，保证消融对比只差在层上 ——
+    prior = subject_mod.prior_for(profile)
+    decision.population = prior
+    log.append(f"[人群先验] {prior['summary']} → {prior['threshold_text']}")
+
     # —— L5 先跑：个体定标改的是筛查阈值，必须在筛查之前 ——
     calib = {}
     if cfg.l5_individual:
-        calib = calibrate(r_peaks, fs)
+        calib = calibrate(r_peaks, fs, prior=prior)
     decision.calibrated = calib
     log.append(f"[L5 个体定标] {'启用：' + str({k: round(v, 2) for k, v in calib.items()}) if calib else '未启用或无有效基线'}")
 
-    scr_cfg = {}
+    scr_cfg = {
+        "pause_s": prior["pause_s"],
+        "tachy": prior["tachy"],
+        "brady": prior["brady"],
+        "af_enabled": prior["af_enabled"],
+        "af_rules": {"cv_rr": prior["af_cv"]},
+    }
     if calib:
-        scr_cfg = {"pause_s": calib["pause_s"], "tachy": calib["tachy"], "brady": calib["brady"]}
+        scr_cfg.update({"pause_s": calib["pause_s"], "tachy": calib["tachy"],
+                        "brady": calib["brady"]})
         # L5 个体定标同样作用于房颤判定：
         #   ① 规则版——把 cv_rr 阈值换成个人基线推导值；
         #   ② 模型版——个人基线 RR 变异越大，判定"房颤样"的证据门槛越高
         #      （af_thr = 0.6 + max(0, cv基线 - 0.08)，上限 0.9）
         cv = calib.get("cv_baseline", 0.0)
-        scr_cfg["af_rules"] = {"cv_rr": calib.get("af_cv", 0.10)}
+        scr_cfg["af_rules"] = {"cv_rr": calib.get("af_cv", prior["af_cv"])}
         scr_cfg["af_thr"] = float(min(0.9, 0.6 + max(0.0, cv - 0.08)))
+    # 场景覆盖放在最后：只用于实时监测这类"窗口短、无法跨窗确认"的场景
+    if screen_overrides:
+        scr_cfg.update(screen_overrides)
+        log.append(f"[筛查参数] 场景覆盖：{screen_overrides}")
     events = R.screen_all(x, r_peaks, fs, scr_cfg)
     log.append(f"[筛查] 原始候选事件 {len(events)} 个")
 
@@ -244,17 +297,18 @@ def run(x: np.ndarray, fs: float, r_peaks, r_peaks_second=None,
 
     # —— L3 二次确认 ——
     if cfg.l3_confirmation:
-        events, down = apply_l3(events, x, fs, r_peaks_second, log, cfg.confirm_min_windows)
+        events, down = apply_l3(events, x, fs, r_peaks_second, log,
+                                cfg.confirm_min_windows, rate_thr=scr_cfg)
         suppressed += down
     else:
         log.append("[L3 二次确认] 关闭")
 
     # —— L2 分级 ——
     if cfg.l2_grading:
-        decision.level = apply_l2(events, log)
+        decision.level = apply_l2(events, log, rate_thr=scr_cfg)
     else:
         log.append("[L2 分级] 关闭")
-        decision.level = "attention" if events else "normal"
+        decision.level = "caution" if events else "normal"
 
     decision.events = events
     decision.suppressed = suppressed

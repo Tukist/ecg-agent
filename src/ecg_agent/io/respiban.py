@@ -1,7 +1,7 @@
 """从 PPG-DaLiA 的 RespiBAN h5 文件里提取 ECG 通道。
 
 数据说明（已核实）：
-  - 目录：PPG_FieldStudy/S1..S15/S*_RespiBAN.h5（默认取项目同级目录，可用 PPG_DALIA_ROOT 覆盖）
+  - 目录：你的路径/PPG_FieldStudy/S1..S15/S*_RespiBAN.h5
   - 顶层 group 以设备 MAC 命名，内含 raw/channel_1..8
   - channel_1 的 sensor 属性为 "ECG"，采样率 700 Hz，16 bit 无符号、以 32768 为零点
   - 每个受试者约 2.5 小时

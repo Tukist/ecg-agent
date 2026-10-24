@@ -60,6 +60,15 @@ def build_context(res) -> str:
     lines = []
     lines.append(f"【记录】来源 {res.source}，时长 {res.duration_s/60:.1f} 分钟，"
                  f"有效监测时长占比 {d.coverage*100:.0f}%（信号质量通过门控的窗口比例）")
+    p = getattr(res, "subject", None) or d.population or {}
+    if p:
+        lines.append(f"【受检者】{p.get('summary', '未提供')}；"
+                     f"人群参考阈值 {p.get('threshold_text', '-')}；"
+                     f"阈值口径：人群先验 → 个人基线微调")
+        if not p.get("af_enabled", True):
+            lines.append("【人群限制】房颤筛查在 18 岁以下未验证、本次未启用；"
+                         "儿科心率阈值来自年龄段参考范围，未经本项目数据验证。"
+                         "解读时不要下'房颤'结论，也不要套用成人标准。")
     lines.append(f"【心率】平均 {h['hr']:.0f} bpm；SDNN {h['sdnn']*1000:.0f} ms；"
                  f"RMSSD {h['rmssd']*1000:.0f} ms；RR 变异系数 {h['cv_rr']:.3f}；"
                  f"样本熵 {h['sample_entropy']:.2f}")
@@ -92,7 +101,8 @@ def build_context(res) -> str:
     lines.extend("  " + s for s in d.log)
     lines.append("【算法已知限制（必须如实转述）】"
                  "① 室上性早搏基本检不出；② 房颤样筛查只是提示、不能区分房颤与频发房早；"
-                 "③ 阈值来自公开数据集，未在自研设备上标定；④ 运动伪差下质量门控会偏宽松。")
+                 "③ 阈值来自公开数据集，未在自研设备上标定；④ 运动伪差下质量门控会偏宽松；"
+                 "⑤ 人群阈值只是先验：儿科档位未在本项目数据上验证，儿童 BMI 应按年龄性别百分位判读。")
     return "\n".join(lines)
 
 

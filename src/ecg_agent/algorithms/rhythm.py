@@ -258,9 +258,12 @@ def screen_all(x: np.ndarray, r_peaks, fs: float, cfg: dict | None = None) -> li
                              cfg.get("rate_min_dur", RATE_MIN_DUR))
     ev += detect_ectopy(x, r_peaks, fs, cfg.get("ectopy_corr", ECTOPY_CORR),
                         cfg.get("ectopy_premature", ECTOPY_PREMATURE))
-    wins = screen_af_windows(r_peaks, fs, cfg.get("af_win", AF_WIN), thr=cfg.get("af_thr", 0.6),
-                             use_model=cfg.get("af_use_model", True),
-                             rules=cfg.get("af_rules"))
-    ev += af_events(wins, cfg.get("af_min_windows", 2))
+    # 房颤筛查可按人群关闭（儿科未验证，见 subject.py）；
+    # 关闭后仍保留早搏/心率/停搏筛查，只是不出"疑似房颤"结论
+    if cfg.get("af_enabled", True):
+        wins = screen_af_windows(r_peaks, fs, cfg.get("af_win", AF_WIN), thr=cfg.get("af_thr", 0.6),
+                                 use_model=cfg.get("af_use_model", True),
+                                 rules=cfg.get("af_rules"))
+        ev += af_events(wins, cfg.get("af_min_windows", 2))
     ev.sort(key=lambda e: e.start)
     return ev

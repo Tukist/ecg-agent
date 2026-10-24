@@ -1,0 +1,60 @@
+心电分析智能体 · 安装与运行说明
+================================
+
+1. 环境要求
+-----------
+· Windows 系统
+· Python 3.10 及以上（建议 3.12/3.13）
+· 已安装 pip
+
+2. 安装依赖
+-----------
+解压文件夹后，打开 PowerShell 或 CMD，进入项目目录：
+
+    cd C:\Users\你的用户名\Desktop\ecg_agent_v1.0
+
+创建虚拟环境并安装依赖：
+
+    python -m venv .venv
+    .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+3. 启动网页端
+-------------
+依赖安装完成后，双击运行项目根目录下的：
+
+    start_web.bat
+
+或者手动执行：
+
+    .venv\Scripts\python.exe -m streamlit run app.py --server.port 8600
+
+浏览器会自动打开 http://localhost:8600。
+
+4. 使用方法
+-----------
+· MIT-BIH 记录：直接选记录号即可分析。
+· 穿戴长时程（PPG-DaLiA）：需要本地存在 PPG_FieldStudy 原始数据，否则该选项不可用。
+· 上传文件：
+  - .npy / .csv 单文件：直接上传，填写采样率。
+  - WFDB 多文件：在文件对话框中按住 Ctrl 同时选中同一记录的 .hea + .dat/.mat 文件，再一起打开；网页会自动识别导联和采样率。
+
+5. 可选功能
+-----------
+· AI 解读 & 追问：需要配置 DeepSeek API Key。
+  方法：在项目根目录新建 .ds_key 文件，内容为一行 key；或设置环境变量 DEEPSEEK_API_KEY。
+
+6. 常见问题
+-----------
+Q：双击 start_web.bat 报「无法加载模块 .venv」？
+A：说明 .venv 未创建或依赖未安装，请按第 2 步执行。
+
+Q：上传 WFDB 文件后提示缺少 .hea？
+A：必须同时上传 .hea 头文件和数据文件（.dat 或 .mat）。按住 Ctrl 多选后再打开。
+
+Q：PPG-DaLiA 选项报错？
+A：该功能需要本地原始数据目录（项目同级的 PPG_FieldStudy/，或设置环境变量 PPG_DALIA_ROOT），不属于本分发包内容。
+
+7. 注意事项
+-----------
+· 本工具所有输出均为「提示级」，仅作健康参考，不构成诊断，需医生复核。
+· 分析时长较长的记录（如 BUT-QDB 24 小时数据）建议先设置较短的分析时长（5-10 分钟）测试。

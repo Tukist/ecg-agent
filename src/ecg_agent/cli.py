@@ -21,6 +21,7 @@ import sys
 from .agent import pipeline
 from .agent import report as R
 from .layers import strategy as S
+from .subject import SubjectProfile
 
 
 def _print_result(res):
@@ -29,6 +30,8 @@ def _print_result(res):
         print(" ", line)
     print("\n===== 结论（提示级，非诊断）=====")
     d = res.decision
+    print(f"  受检者：{d.population.get('summary', '未提供')} | "
+          f"人群阈值：{d.population.get('threshold_text', '-')}")
     print(f"  分级：{R.LEVEL_CN.get(d.level, d.level)} | 上报事件 {d.n_alerts} 个 | "
           f"被压掉候选 {len(d.suppressed)} 个 | 有效监测占比 {d.coverage*100:.1f}%")
     alerts = [e for e in d.events if e.severity in ("caution", "refer")]
@@ -46,9 +49,23 @@ def _print_result(res):
         print(f"  · [info] 仅计数提示（不上报为报警）：{desc}")
 
 
+def _profile(args):
+    """命令行参数 → 受检者档案（全部可选）。"""
+    return SubjectProfile(age=args.age, sex=args.sex, bmi=args.bmi)
+
+
+def _add_subject_args(p):
+    p.add_argument("--age", type=float, default=None,
+                   help="受检者年龄（岁，>0；不填按成人默认阈值）")
+    p.add_argument("--sex", default=None, choices=["男", "女", "male", "female"],
+                   help="受检者性别（可选；女性过速上限 +2 bpm，弱证据修正）")
+    p.add_argument("--bmi", type=float, default=None,
+                   help="BMI（kg/m²，可选；>25 时过速上限每 5 单位 +1 bpm，上限 +4）")
+
+
 def cmd_analyze(args):
     res = pipeline.analyze(args.source, minutes=args.minutes, start_s=args.start,
-                           layers=args.layers)
+                           layers=args.layers, profile=_profile(args))
     _print_result(res)
 
     llm_text = None
@@ -75,7 +92,7 @@ def cmd_ask(args):
     from .agent import llm
 
     res = pipeline.analyze(args.source, minutes=args.minutes, start_s=args.start,
-                           layers=args.layers, verbose=False)
+                           layers=args.layers, verbose=False, profile=_profile(args))
     _print_result(res)
 
     if not llm.api_key():
@@ -116,6 +133,7 @@ def main(argv=None):
                    help="ppg-dalia:S1 / mitdb:100 / file:path.npy")
     a.add_argument("--minutes", type=float, default=None, help="分析前 N 分钟（默认全部）")
     a.add_argument("--start", type=float, default=0.0, help="起始秒（配合 --minutes 定位片段）")
+    _add_subject_args(a)
     a.add_argument("--layers", default="完整五层", choices=list(S.PRESETS.keys()),
                    help="五层策略配置（用于消融演示）")
     a.add_argument("--out", default="reports", help="报告输出目录（留空=不出文件）")
@@ -127,6 +145,7 @@ def main(argv=None):
     b.add_argument("--source", required=True)
     b.add_argument("--minutes", type=float, default=None)
     b.add_argument("--start", type=float, default=0.0)
+    _add_subject_args(b)
     b.add_argument("--layers", default="完整五层", choices=list(S.PRESETS.keys()))
     b.add_argument("--question", "-q", default=None, help="问题；不带则进入交互问答")
     b.set_defaults(func=cmd_ask)

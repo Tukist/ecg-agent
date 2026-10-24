@@ -34,6 +34,87 @@ def _setup_font():
 
 
 def render_figure(res, path: str):
+    """根据记录类型自动选择长记录或短记录图。"""
+    if res.short_record and res.duration_s < 30:
+        return render_short_figure(res, path)
+    return render_long_figure(res, path)
+
+
+def render_short_figure(res, path: str):
+    """短记录（< 30 s）专用图：波形+逐拍标注、RR 间期、统计摘要。"""
+    plt = _setup_font()
+    fig = plt.figure(figsize=(12, 10))
+    gs = fig.add_gridspec(3, 2, height_ratios=[2, 1.2, 1])
+
+    ax_wave = fig.add_subplot(gs[0, :])
+    ax_rr = fig.add_subplot(gs[1, :])
+    ax_text = fig.add_subplot(gs[2, :])
+
+    fs = res.fs
+    x = res.x
+    t = np.arange(len(x)) / fs
+    s = res.short_record
+    beats = s.get("beat_details", [])
+
+    # ① 完整波形 + R 峰 + 疑似早搏标注
+    ax_wave.plot(t, x, lw=0.8, color="#374151", label="ECG")
+    normal_r = [b["time_s"] for b in beats if b["flag"] == "normal"]
+    normal_y = [x[int(b["time_s"] * fs)] for b in beats if b["flag"] == "normal"]
+    ectopy_r = [b["time_s"] for b in beats if b["flag"] == "suspected_ectopy"]
+    ectopy_y = [x[int(b["time_s"] * fs)] for b in beats if b["flag"] == "suspected_ectopy"]
+    ax_wave.plot(normal_r, normal_y, "v", ms=5, color="#059669", label="正常心拍")
+    if ectopy_r:
+        ax_wave.plot(ectopy_r, ectopy_y, "v", ms=6, color="#dc2626", label="疑似早搏")
+    ax_wave.set_xlabel("时间 (秒)")
+    ax_wave.set_ylabel("幅值 (a.u.)")
+    ax_wave.set_title("① 短记录全波形与逐拍标注（红心=疑似早搏）")
+    ax_wave.legend(loc="upper right", fontsize=9)
+
+    # ② RR 间期 / 心率 逐拍
+    if beats:
+        idx = [b["idx"] for b in beats[1:]]
+        rr_prev = [b["rr_prev_s"] * 1000 for b in beats[1:] if b["rr_prev_s"] is not None]
+        hr = [60.0 / b["rr_prev_s"] for b in beats[1:] if b["rr_prev_s"] is not None]
+        ax_rr.bar(idx, rr_prev, color="#3b82f6", alpha=0.7, label="RR 间期 (ms)")
+        ax_rr.axhline(1000, ls="--", lw=0.8, color="#6b7280")
+        ax_rr.set_xlabel("心拍序号")
+        ax_rr.set_ylabel("RR 间期 (ms)", color="#3b82f6")
+        ax_rr.tick_params(axis="y", labelcolor="#3b82f6")
+        ax_rr.set_title("② 逐拍 RR 间期与心率")
+
+        ax_hr = ax_rr.twinx()
+        ax_hr.plot(idx, hr, "o-", ms=3, lw=1.0, color="#dc2626", label="心率 (bpm)")
+        ax_hr.set_ylabel("心率 (bpm)", color="#dc2626")
+        ax_hr.tick_params(axis="y", labelcolor="#dc2626")
+
+    # ③ 文字摘要表格
+    ax_text.axis("off")
+    if s.get("too_few_beats"):
+        summary = "心拍过少，无法做逐拍摘要。"
+    else:
+        summary = (
+            f"总心拍：{s['n_beats']} 拍\n"
+            f"心率：{s['hr_min']:.0f}–{s['hr_max']:.0f} bpm，平均 {s['hr_mean']:.0f} bpm\n"
+            f"节律：{'整齐' if s['regular'] else '不齐'}（RR 变异系数 {s['rr_cv']:.3f}）\n"
+            f"疑似早搏：{s['suspected_ectopy']} 次；宽 QRS：{s['suspected_wide_qrs']} 次\n"
+            f"长间歇（≥3 s）：{len(s['pause_events'])} 次"
+        )
+    ax_text.text(0.05, 0.95, summary, transform=ax_text.transAxes, fontsize=11,
+                 verticalalignment="top",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#f3f4f6", edgecolor="#d1d5db"))
+
+    db_label = res.db_label or "无"
+    ax_text.text(0.05, 0.45, f"数据库参考标注：{db_label}", transform=ax_text.transAxes,
+                 fontsize=10, verticalalignment="top", wrap=True,
+                 color="#4b5563")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return path
+
+
+def render_long_figure(res, path: str):
     plt = _setup_font()
     fig, axes = plt.subplots(4, 1, figsize=(12, 13))
 
@@ -128,6 +209,10 @@ def render_markdown(res, path: str, fig_path: str | None = None, llm_text: str |
     lines = []
     lines.append(f"# 心电分析报告（提示级）\n")
     lines.append(f"- 数据来源：`{res.source}`")
+    p = getattr(res, "subject", None) or d.population or {}
+    if p:
+        lines.append(f"- 受检者：{p.get('summary', '未提供')}")
+        lines.append(f"- 人群参考阈值：{p.get('threshold_text', '-')}")
     lines.append(f"- 记录时长：{res.duration_s/60:.1f} 分钟（分析采样率 {res.fs:.0f} Hz）")
     lines.append(f"- 有效监测时长占比：{d.coverage*100:.1f}%（通过质量门控的窗口比例）")
     lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -135,7 +220,7 @@ def render_markdown(res, path: str, fig_path: str | None = None, llm_text: str |
 
     lines.append("## 一、结论（提示级）\n")
     n_alert = d.n_alerts
-    if d.level == "normal" or n_alert == 0:
+    if d.level == "normal" and n_alert == 0:
         lines.append("本次记录**未见需要即刻关注的疑似异常心律**。")
     elif d.level == "refer":
         lines.append(f"本次记录检出 **{n_alert}** 处**建议尽快就医复核**的疑似心律变化（见下表）。")
@@ -144,14 +229,46 @@ def render_markdown(res, path: str, fig_path: str | None = None, llm_text: str |
     lines.append("\n> 本结果由算法自动生成，仅作健康提示，**不构成诊断**；"
                  "如有不适或需要结论，请携带完整记录由医生复核。\n")
 
+    CN = "一二三四五六七八九十"
+    sec = 3
+
     lines.append("## 二、心率概览\n")
     h = res.hrv
     lines.append(f"- 平均心率：{h['hr']:.0f} bpm")
     lines.append(f"- SDNN：{h['sdnn']*1000:.0f} ms；RMSSD：{h['rmssd']*1000:.0f} ms；pNN50：{h['pnn50']*100:.0f}%")
     lines.append(f"- RR 变异系数：{h['cv_rr']:.3f}；样本熵：{h['sample_entropy']:.2f}\n")
 
-    CN = "一二三四五六七八九十"
-    sec = 3
+    if res.short_record:
+        lines.append(f"## {CN[sec-1]}、短记录逐拍摘要\n")
+        sec += 1
+        s = res.short_record
+        if s.get("too_few_beats"):
+            lines.append("心拍过少，无法做逐拍摘要。\n")
+        else:
+            lines.append(f"- 总心拍数：{s['n_beats']} 拍")
+            lines.append(f"- 心率范围：{s['hr_min']:.0f}–{s['hr_max']:.0f} bpm，平均 {s['hr_mean']:.0f} bpm")
+            lines.append(f"- 节律整齐度：{'整齐' if s['regular'] else '不齐'}（RR 变异系数 {s['rr_cv']:.3f}）")
+            lines.append(f"- 疑似早搏：{s['suspected_ectopy']} 次")
+            lines.append(f"- 宽 QRS（>120 ms）：{s['suspected_wide_qrs']} 次")
+            if s['pause_events']:
+                lines.append(f"- 长间歇（≥3 s）：{len(s['pause_events'])} 次")
+            else:
+                lines.append("- 长间歇（≥3 s）：无")
+            lines.append("")
+            if s['beat_details']:
+                lines.append("| 序号 | 时间(s) | 前 RR(s) | 后 RR(s) | QRS宽(s) | 形态相关 | 标记 |")
+                lines.append("|------|---------|----------|----------|----------|----------|------|")
+                for b in s['beat_details']:
+                    flag_cn = {"normal": "正常", "suspected_ectopy": "疑似早搏"}.get(b['flag'], b['flag'])
+                    lines.append(f"| {b['idx']} | {b['time_s']} | {b['rr_prev_s'] or '-'} | "
+                                 f"{b['rr_next_s'] or '-'} | {b['width_s']} | {b['morph_corr']} | {flag_cn} |")
+                lines.append("")
+
+    if res.db_label:
+        lines.append(f"## {CN[sec-1]}、数据库参考标注（仅展示，不参与判断）\n")
+        sec += 1
+        lines.append(f"{res.db_label}\n")
+
     lines.append(f"## {CN[sec-1]}、疑似事件（经五层策略过滤后上报）\n")
     sec += 1
     if d.events:
@@ -203,6 +320,20 @@ def render_markdown(res, path: str, fig_path: str | None = None, llm_text: str |
                  "带通峰度、形态一致性 → 0–1 质量分；另计算 6 子频段能量比/熵（12 维）备查")
     lines.append("- 房颤样筛查：RR 域 8 维特征 + 逻辑回归（按记录分组交叉验证训练）")
     lines.append("- 五层策略：质量门控 → 分级 → 二次确认 → 人审兜底 → 个体定标")
+    if p:
+        lines.append(f"- 人群参数：{p.get('summary', '未提供')}；"
+                     f"人群参考阈值 {p.get('threshold_text', '-')}")
+        if d.calibrated:
+            lines.append(f"- 个体定标后阈值：过速 >{d.calibrated['tachy']:.0f} bpm、"
+                         f"过缓 <{d.calibrated['brady']:.0f} bpm、"
+                         f"停搏 >{d.calibrated['pause_s']:.1f} s")
+        if not p.get("af_enabled", True):
+            lines.append("- 儿科说明：房颤筛查在 18 岁以下未验证，本次未启用；"
+                         "年龄段心率阈值来自临床参考范围，未经本项目数据重新验证")
+        elif not p.get("age_known", True):
+            lines.append("- 人群说明：未提供年龄/性别/BMI，按成人默认阈值处理")
+        for note in p.get("notes", []):
+            lines.append(f"- 人群提示：{note}")
     lines.append("- 已知限制：本报告的臂带/腕带形态未定标；阈值来自公开数据集，"
                  "部署到自研设备前必须用自己的数据重新标定\n")
 
